@@ -119,15 +119,14 @@ def generate_mapping_for(source_dir: pl.PosixPath) -> Dict[pl.PosixPath, pl.Posi
                 mapping[current] = destination
     return mapping
 
-
-def execute_link(mapping: Dict[pl.PosixPath, pl.PosixPath], dry_run=False) -> None:
+def execute_link(mapping: Dict[pl.PosixPath, pl.PosixPath]) -> None:
     for source, dest in mapping.items():
         if dest.exists():
-            print("Destination (", dest, ") for ", source, " already exists")
-        elif dry_run:
-            print("Linking source ", source, " to ", dest)
+            if not (dest.is_symlink() and dest.readlink() == source.resolve()):
+                print("Destination (", dest, ") for ", source, " already exists")
         else:
-            symlink(source.resolve(), dest.resolve())
+            dest.parent.resolve().mkdir(parents=True, exist_ok=True)
+            dest.resolve().symlink_to(source.resolve())
 
 
 def display_mapping(mapping: Dict[pl.PosixPath, pl.PosixPath]) -> None:
