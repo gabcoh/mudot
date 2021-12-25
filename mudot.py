@@ -119,6 +119,7 @@ def generate_mapping_for(source_dir: pl.PosixPath) -> Dict[pl.PosixPath, pl.Posi
                 mapping[current] = destination
     return mapping
 
+
 def execute_link(mapping: Dict[pl.PosixPath, pl.PosixPath]) -> None:
     for source, dest in mapping.items():
         if dest.exists():
@@ -149,24 +150,26 @@ def display_mapping(mapping: Dict[pl.PosixPath, pl.PosixPath]) -> None:
                 entries += [(entry, mapping)]
             elif isinstance(mapping, dict):
                 dirs += [(entry, mapping)]
-        head = ''.join(map(lambda x: '│   '  if x else '    ', parents))
+        head = "".join(map(lambda x: "│   " if x else "    ", parents))
         for i, (entry, mapping) in enumerate(entries + dirs):
-            tree_char = '├──'
+            tree_char = "├──"
             only_child = False
             if i == 0 and first and i == last_item:
-                tree_char = ''
+                tree_char = ""
                 only_child = True
             elif i == 0 and first:
-                tree_char = '┌──' 
+                tree_char = "┌──"
             elif i == last_item:
-                tree_char = '└──' 
+                tree_char = "└──"
             if isinstance(mapping, pl.PosixPath):
-                out = head + tree_char + str(entry) + ' --> ' + str(mapping)
+                out = head + tree_char + str(entry) + " --> " + str(mapping)
                 print(out)
             elif isinstance(mapping, dict):
                 out = head + tree_char + str(entry)
                 print(out)
-                print_tree(mapping, parents + ([i != last_item] if not only_child else []))
+                print_tree(
+                    mapping, parents + ([i != last_item] if not only_child else [])
+                )
 
     print_tree(tree, [], first=True)
 
