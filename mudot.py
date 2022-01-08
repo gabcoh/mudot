@@ -5,7 +5,7 @@ from os import symlink
 import pathlib as pl
 import re
 import pprint as pp
-from typing import Optional, Dict, Union, TypeVar, Callable
+from typing import Optional, Dict, Union, TypeVar, Callable, NamedTuple
 
 
 MAPPING_DIRECTIVE_FILE = ".dest-dir"
@@ -46,7 +46,7 @@ def find_nearest_containing(
 def process_mapping_directive(name: pl.PosixPath) -> tuple[pl.PosixPath, pl.PosixPath]:
     with name.open() as f:
         first_line = f.readline().strip()
-        return (name.parent, pl.PosixPath(first_line).expanduser())
+        return pl.PosixPath(first_line).expanduser()
 
 
 def process_ignore_directive(
@@ -60,14 +60,6 @@ def process_ignore_directive(
 
 def generate_mapping_for(source_dir: pl.PosixPath) -> Dict[pl.PosixPath, pl.PosixPath]:
     mapping = {}
-    active_mapping_directive = None
-    maybe_mapping_directive_file = find_nearest_containing(
-        MAPPING_DIRECTIVE_FILE, source_dir
-    )
-    if maybe_mapping_directive_file is not None:
-        active_mapping_directive: Optional[
-            tuple[pl.PosixPath, pl.PosixPath]
-        ] = process_mapping_directive(maybe_mapping_directive_file)
     maybe_ignore_directive_file = find_nearest_containing(
         IGNORE_DIRECTICE_FILE, source_dir
     )
@@ -84,19 +76,12 @@ def generate_mapping_for(source_dir: pl.PosixPath) -> Dict[pl.PosixPath, pl.Posi
         if any(map(lambda x: current in x[1], active_ignore_directives)):
             continue
 
-        if (
-            active_mapping_directive is not None
-            and active_mapping_directive[0] not in current.parents
-        ):
-            active_mapping_directive = None
-        active_ignore_directives = list(
-            filter(lambda x: x[0] in current.parents, active_ignore_directives)
-        )
-
         if current.is_dir():
             maybe_dot_file = find_file(MAPPING_DIRECTIVE_FILE, current)
             if maybe_dot_file is not None:
-                active_mapping_directive = process_mapping_directive(maybe_dot_file)
+                mapping[current] = process_mapping_directive(maybe_dot_file)
+                continue
+
             maybe_ignore_file = find_file(IGNORE_DIRECTICE_FILE, current)
             if maybe_ignore_file is not None:
                 active_ignore_directives += [
@@ -121,70 +106,88 @@ def generate_mapping_for(source_dir: pl.PosixPath) -> Dict[pl.PosixPath, pl.Posi
 
 
 def execute_link(mapping: Dict[pl.PosixPath, pl.PosixPath]) -> None:
+    abort = False
     for source, dest in mapping.items():
         if dest.exists():
             if not (dest.is_symlink() and dest.readlink() == source.resolve()):
                 print("Destination (", dest, ") for ", source, " already exists")
-        else:
+                abort = True
+            
+    if abort:
+        return
+    
+    for source, dest in mapping.items():
+        if not (dest.is_symlink() and dest.readlink() == source.resolve()):
+            assert(not dest.exists())
             dest.parent.resolve().mkdir(parents=True, exist_ok=True)
             dest.resolve().symlink_to(source.resolve())
 
-
-def display_mapping(mapping: Dict[pl.PosixPath, pl.PosixPath]) -> None:
-    TreeType = Dict[str, Union[str, "TreeType"]]
+TreeType = Dict[str, Optional["TreeType"]]
+def create_tree_of_files(files: list[pl.PosixPath]) -> TreeType:
     tree: TreeType = {}
-    for source, dest in mapping.items():
+    for file in files:
         top = tree
-        for part in source.parts[:-1]:
-            if part not in top:
+        for part in reversed(file.parents):
+            if part not in top or top[part] is None:
+                # NOT SURE ABOUT THE `or top[part] is None`
+                # It's supposed to protect if files contains a file and its parent directory
                 top[part] = {}
             top = top[part]
-        top[source.parts[-1]] = dest
+        top[file] = None
+    return tree
 
-    def print_tree(tree: TreeType, parents: list[bool], first=False) -> None:
-        last_item = len(tree.items()) - 1
-        entries = []
-        dirs = []
-        for entry, mapping in tree.items():
-            if isinstance(mapping, pl.PosixPath):
-                entries += [(entry, mapping)]
-            elif isinstance(mapping, dict):
-                dirs += [(entry, mapping)]
-        head = "".join(map(lambda x: "│   " if x else "    ", parents))
-        for i, (entry, mapping) in enumerate(entries + dirs):
-            tree_char = "├──"
-            only_child = False
-            if i == 0 and first and i == last_item:
-                tree_char = ""
-                only_child = True
-            elif i == 0 and first:
-                tree_char = "┌──"
-            elif i == last_item:
-                tree_char = "└──"
-            if isinstance(mapping, pl.PosixPath):
-                out = head + tree_char + str(entry) + " --> " + str(mapping)
-                print(out)
-            elif isinstance(mapping, dict):
-                out = head + tree_char + str(entry)
-                print(out)
-                print_tree(
-                    mapping, parents + ([i != last_item] if not only_child else [])
-                )
+EntryDisplayOptions = NamedTuple("EntryDisplayOptions", annotation=str, collapse=bool)
+def print_tree(tree: TreeType, metadata=dict[pl.PosixPath, EntryDisplayOptions], default_metadata=EntryDisplayOptions(annotation="", collapse=False), parents: list[bool]=[], first: bool=True) -> None:
+    last_item = len(tree.items()) - 1
+    entries = []
+    dirs = []
+    for entry, children in tree.items():
+        if children is None:
+            entries += [entry]
+        else:
+            dirs += [entry]
+    head = "".join(map(lambda x: "│   " if x else "    ", parents))
+    for i, entry in enumerate(entries + dirs):
+        tree_char = "├──"
+        only_child = False
+        if i == 0 and first and i == last_item:
+            tree_char = ""
+            only_child = True
+        elif i == 0 and first:
+            tree_char = "┌──"
+        elif i == last_item:
+            tree_char = "└──"
 
-    print_tree(tree, [], first=True)
+        opts = metadata.get(entry, default_metadata)
+        out = head + tree_char + str(entry.name) + " " + opts.annotation
+        print(out)
+        if opts.collapse:
+            tree[entry] = {pl.PosixPath("(...)"): None}
 
+        if tree[entry] is not None:
+            print_tree(
+                tree[entry],
+                parents=parents + ([i != last_item] if not only_child else []),
+                metadata=metadata,
+                default_metadata=default_metadata,
+                first=False
+            )
+
+def display_mapping(mapping: Dict[pl.PosixPath, pl.PosixPath]) -> None:
+    tree = create_tree_of_files(mapping.keys())
+
+    print_tree(tree, metadata={k: EntryDisplayOptions(annotation="--> " + str(v), collapse=k.is_dir()) for k, v in mapping.items()})
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="micro dotfile manager")
     parser.add_argument("source")
-    parser.add_argument("--link", action="store_true")
+    parser.add_argument("--exec", choices=["display", "link"], default="display")
 
     args = parser.parse_args()
 
     mapping = generate_mapping_for(pl.PosixPath(args.source))
 
-    display_mapping(mapping)
-
-    if args.link:
-        print("Executing link")
+    if args.exec== "display":
+        display_mapping(mapping)
+    elif args.exec == "link":
         execute_link(mapping)
